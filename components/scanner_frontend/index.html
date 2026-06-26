@@ -15,71 +15,65 @@
       flex-direction: column;
       align-items: center;
       padding: 12px;
-      gap: 10px;
+      gap: 8px;
     }
     #reader {
       width: 100%;
       max-width: 420px;
-      border-radius: 12px;
+      border-radius: 10px;
       overflow: hidden;
       background: #1e2130;
-    }
-    #reader video { width: 100%; border-radius: 12px; }
-    /* Override html5-qrcode internal styles for dark theme */
-    #reader__scan_region { background: transparent !important; }
-    #reader__dashboard { background: #1e2130 !important; border-top: none !important; }
-    #reader__dashboard_section_csr button {
-      background: #ff4b4b !important;
-      color: white !important;
-      border: none !important;
-      border-radius: 6px !important;
-      padding: 8px 16px !important;
-      cursor: pointer !important;
+      min-height: 60px;
     }
     .btn {
-      padding: 12px 24px;
+      padding: 11px 20px;
       border: none;
       border-radius: 8px;
-      font-size: 16px;
+      font-size: 15px;
       cursor: pointer;
       font-weight: 600;
       width: 100%;
       max-width: 420px;
-      transition: opacity 0.2s;
     }
-    .btn:active { opacity: 0.8; }
-    #btn-start { background: #ff4b4b; color: white; }
-    #btn-stop { background: #555; color: white; display: none; }
+    #btn-start  { background: #ff4b4b; color: #fff; }
+    #btn-stop   { background: #555;    color: #fff; display: none; }
+    #btn-test   { background: #1e4d7b; color: #90caf9; font-size: 13px; display: none; }
     #status {
       padding: 10px 14px;
       border-radius: 8px;
-      font-size: 14px;
+      font-size: 13px;
       width: 100%;
       max-width: 420px;
-      min-height: 40px;
+      min-height: 38px;
       text-align: center;
       font-weight: 500;
       word-break: break-all;
+      line-height: 1.4;
     }
-    #status.new { background: #1a472a; color: #69db7c; border: 1px solid #2d6a4f; }
-    #status.dup { background: #3b2000; color: #ffa94d; border: 1px solid #6b3a00; }
-    #status.idle { background: #1e2130; color: #888; border: 1px solid #333; }
-    #status.error { background: #3b0f0f; color: #ff6b6b; border: 1px solid #6b1f1f; }
+    .idle  { background: #1e2130; color: #888;    border: 1px solid #333; }
+    .new   { background: #1a472a; color: #69db7c; border: 1px solid #2d6a4f; }
+    .dup   { background: #3b2000; color: #ffa94d; border: 1px solid #6b3a00; }
+    .error { background: #3b0f0f; color: #ff6b6b; border: 1px solid #6b1f1f; }
   </style>
 </head>
 <body>
   <div id="reader"></div>
   <button class="btn" id="btn-start" onclick="startScanner()">Iniciar Scanner</button>
-  <button class="btn" id="btn-stop" onclick="stopScanner()">Detener Scanner</button>
+  <button class="btn" id="btn-stop"  onclick="stopScanner()">Detener Scanner</button>
+  <button class="btn" id="btn-test"  onclick="sendTest()">Probar conexión (código de prueba)</button>
   <div id="status" class="idle">Presiona "Iniciar Scanner" para activar la cámara</div>
 
   <script>
-    // ── Streamlit postMessage protocol ──────────────────────────────────────
+    // ── Streamlit communication ──────────────────────────────────────────────
     window.addEventListener("load", function () {
       window.parent.postMessage(
         { isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 },
         "*"
       );
+    });
+
+    window.addEventListener("message", function (evt) {
+      if (evt.data && evt.data.type === "streamlit:render") setHeight();
     });
 
     function sendValue(value) {
@@ -90,85 +84,112 @@
     }
 
     function setHeight() {
+      var h = document.body.scrollHeight;
       window.parent.postMessage(
-        { isStreamlitMessage: true, type: "streamlit:setFrameHeight", height: document.body.scrollHeight + 16 },
+        { isStreamlitMessage: true, type: "streamlit:setFrameHeight", height: h + 20 },
         "*"
       );
     }
 
-    window.addEventListener("message", function (evt) {
-      if (evt.data && evt.data.type === "streamlit:render") {
-        setHeight();
-      }
-    });
+    // ── Scanner ──────────────────────────────────────────────────────────────
+    var scanner    = null;
+    var lastCode   = null;
+    var lastTime   = 0;
+    var COOLDOWN   = 3000;
 
-    // ── Scanner state ────────────────────────────────────────────────────────
-    var scanner = null;
-    var lastSentCode = null;
-    var lastSentTime = 0;
-    var COOLDOWN_MS = 3000;
+    var FORMATS = [
+      Html5QrcodeSupportedFormats.QR_CODE,
+      Html5QrcodeSupportedFormats.EAN_13,
+      Html5QrcodeSupportedFormats.EAN_8,
+      Html5QrcodeSupportedFormats.CODE_128,
+      Html5QrcodeSupportedFormats.CODE_39,
+      Html5QrcodeSupportedFormats.UPC_A,
+      Html5QrcodeSupportedFormats.UPC_E,
+      Html5QrcodeSupportedFormats.ITF,
+      Html5QrcodeSupportedFormats.DATA_MATRIX,
+      Html5QrcodeSupportedFormats.PDF_417,
+    ];
 
     function startScanner() {
       document.getElementById("btn-start").style.display = "none";
-      document.getElementById("btn-stop").style.display = "block";
+      document.getElementById("btn-stop").style.display  = "block";
+      document.getElementById("btn-test").style.display  = "block";
       setStatus("Iniciando cámara...", "idle");
-      setHeight();
 
-      scanner = new Html5Qrcode("reader");
+      scanner = new Html5Qrcode("reader", { formatsToSupport: FORMATS, verbose: false });
 
-      var config = {
-        fps: 10,
-        qrbox: function (viewfinderWidth, viewfinderHeight) {
-          var side = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.75);
-          return { width: side, height: Math.floor(side * 0.6) };
-        }
-      };
+      var config = { fps: 15, qrbox: 250, aspectRatio: 1.0 };
 
-      scanner
-        .start({ facingMode: "environment" }, config, onScanSuccess, function () {})
+      // Try rear camera first; fall back to default if it fails
+      scanner.start({ facingMode: "environment" }, config, onDetected, function () {})
         .then(function () {
           setStatus("Cámara activa — apunta al código", "idle");
           setHeight();
         })
-        .catch(function (err) {
-          setStatus("Error al iniciar cámara: " + err, "error");
-          document.getElementById("btn-start").style.display = "block";
-          document.getElementById("btn-stop").style.display = "none";
-          setHeight();
+        .catch(function () {
+          // fallback: let the browser choose the camera
+          scanner.start({ facingMode: "user" }, config, onDetected, function () {})
+            .then(function () {
+              setStatus("Cámara activa (frontal) — apunta al código", "idle");
+              setHeight();
+            })
+            .catch(function (err) {
+              setStatus("No se pudo acceder a la cámara: " + err, "error");
+              resetButtons();
+              setHeight();
+            });
         });
     }
 
     function stopScanner() {
       if (scanner) {
         scanner.stop().then(function () {
+          scanner.clear();
           scanner = null;
-          document.getElementById("btn-start").style.display = "block";
-          document.getElementById("btn-stop").style.display = "none";
+          resetButtons();
           setStatus("Scanner detenido", "idle");
           setHeight();
+        }).catch(function () {
+          scanner = null;
+          resetButtons();
         });
       }
     }
 
-    function onScanSuccess(decodedText, decodedResult) {
+    function resetButtons() {
+      document.getElementById("btn-start").style.display = "block";
+      document.getElementById("btn-stop").style.display  = "none";
+      document.getElementById("btn-test").style.display  = "none";
+    }
+
+    function onDetected(decodedText, decodedResult) {
       var now = Date.now();
-      if (decodedText === lastSentCode && now - lastSentTime < COOLDOWN_MS) return;
+      if (decodedText === lastCode && now - lastTime < COOLDOWN) return;
+      lastCode = decodedText;
+      lastTime = now;
 
-      lastSentCode = decodedText;
-      lastSentTime = now;
+      var fmt = "UNKNOWN";
+      try {
+        // html5-qrcode v2.3.x exposes formatName here
+        fmt = decodedResult.result.format.formatName;
+      } catch (e) {
+        try { fmt = String(decodedResult.result.format.format); } catch (e2) {}
+      }
 
-      var formatName = "UNKNOWN";
-      try { formatName = decodedResult.result.format.formatName; } catch (e) {}
+      setStatus("✓ Detectado: " + decodedText + "\nTipo: " + fmt, "new");
+      sendValue({ code: decodedText, type: fmt, scan_id: now });
+    }
 
-      setStatus("Detectado: " + decodedText, "new");
-
-      sendValue({ code: decodedText, type: formatName, scan_id: now });
+    function sendTest() {
+      var now = Date.now();
+      setStatus("Enviando código de prueba...", "idle");
+      sendValue({ code: "PRUEBA-" + now, type: "TEST", scan_id: now });
     }
 
     function setStatus(msg, cls) {
       var el = document.getElementById("status");
       el.textContent = msg;
-      el.className = cls;
+      el.className   = cls;
       setHeight();
     }
   </script>
