@@ -143,6 +143,54 @@
       );
     }
 
+    // ── Audio (Web Audio API) ──────────────────────────────────────────────────
+    var audioCtx = null;
+
+    function getAudioCtx() {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      return audioCtx;
+    }
+
+    function beepSuccess() {
+      try {
+        var ctx = getAudioCtx();
+        // Two short ascending tones — like a pistol scanner
+        [880, 1320].forEach(function (freq, i) {
+          var osc  = ctx.createOscillator();
+          var gain = ctx.createGain();
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.type      = "sine";
+          osc.frequency.value = freq;
+          var t = ctx.currentTime + i * 0.12;
+          gain.gain.setValueAtTime(0.35, t);
+          gain.gain.exponentialRampToValueAtTime(0.001, t + 0.10);
+          osc.start(t);
+          osc.stop(t + 0.10);
+        });
+      } catch (e) {}
+    }
+
+    function beepError() {
+      try {
+        var ctx = getAudioCtx();
+        // Two low descending tones — error feel
+        [300, 200].forEach(function (freq, i) {
+          var osc  = ctx.createOscillator();
+          var gain = ctx.createGain();
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.type      = "sawtooth";
+          osc.frequency.value = freq;
+          var t = ctx.currentTime + i * 0.18;
+          gain.gain.setValueAtTime(0.25, t);
+          gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+          osc.start(t);
+          osc.stop(t + 0.15);
+        });
+      } catch (e) {}
+    }
+
     // ── Scanner state ──────────────────────────────────────────────────────────
     var codeReader   = null;
     var scanControls = null;   // IScannerControls from decodeFromConstraints
@@ -203,6 +251,7 @@
         setStatus("Escaneando — apunta al código");
         sendHeight();
       }).catch(function (err) {
+        beepError();
         setStatus("Error al iniciar cámara: " + (err.message || err));
         setDebug(String(err));
         resetButtons(); sendHeight();
@@ -237,6 +286,7 @@
       if (text !== lastCode || now - lastTime >= COOLDOWN) {
         lastCode = text;
         lastTime = now;
+        beepSuccess();
         setDebug("→ Streamlit: " + text + " [" + fmtName + "]");
         sendValue({ code: text, type: fmtName, scan_id: now });
       }
