@@ -52,21 +52,31 @@ scan_result = qr_scanner(key="qr_scanner")
 # Process incoming scan — only when scan_id is new
 if scan_result and isinstance(scan_result, dict):
     scan_id = scan_result.get("scan_id")
-    code = scan_result.get("code", "").strip()
-    code_type = scan_result.get("type", "UNKNOWN")
 
-    if code and scan_id != st.session_state.last_processed_scan_id:
+    if scan_id != st.session_state.last_processed_scan_id:
         st.session_state.last_processed_scan_id = scan_id
-        is_new = add_code(code, code_type, session_name)
-        st.session_state.last_scan_result = {"code": code, "is_new": is_new}
+        codes = scan_result.get("codes", [])
+
+        new_codes, dup_codes = [], []
+        for item in codes:
+            code = item.get("code", "").strip()
+            code_type = item.get("type", "UNKNOWN")
+            if code:
+                if add_code(code, code_type, session_name):
+                    new_codes.append(code)
+                else:
+                    dup_codes.append(code)
+
+        if new_codes or dup_codes:
+            st.session_state.last_scan_result = {"new": new_codes, "dup": dup_codes}
 
 # Feedback message
 if st.session_state.last_scan_result:
     result = st.session_state.last_scan_result
-    if result["is_new"]:
-        st.success(f"Nuevo código agregado: `{result['code']}`")
-    else:
-        st.warning(f"Duplicado ignorado: `{result['code']}`")
+    if result["new"]:
+        st.success(f"Nuevos: `{'`  `'.join(result['new'])}`")
+    if result["dup"]:
+        st.warning(f"Duplicados ignorados: `{'`  `'.join(result['dup'])}`")
 
 # Code list + export
 if st.session_state.code_list:

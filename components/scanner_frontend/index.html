@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <!-- ZXing loaded as fallback for iOS/Firefox (BarcodeDetector not available there) -->
   <script src="https://unpkg.com/@zxing/library@0.19.1/umd/index.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -17,7 +18,7 @@
       gap: 8px;
     }
 
-    /* ── Camera view ─────────────────────────────────────────── */
+    /* ── Camera ────────────────────────────────────────────────── */
     .scanner-wrap {
       position: relative;
       width: 100%;
@@ -41,35 +42,30 @@
       font-size: 13px;
     }
 
-    /* ── Result display ──────────────────────────────────────── */
-    #result-wrap {
-      width: 100%;
-      max-width: 440px;
-      display: none;
-    }
+    /* ── Last detected code ────────────────────────────────────── */
+    #result-wrap { width: 100%; max-width: 440px; display: none; }
     #result-code {
       font-family: 'Courier New', monospace;
-      font-size: 22px;
+      font-size: 20px;
       font-weight: bold;
       background: #1a472a;
       color: #69db7c;
       border: 2px solid #2d6a4f;
       border-radius: 8px;
-      padding: 14px;
+      padding: 12px;
       text-align: center;
       word-break: break-all;
-      letter-spacing: 1px;
     }
     #result-type {
       font-size: 11px;
       color: #5a8a6a;
       text-align: center;
-      margin-top: 4px;
+      margin-top: 3px;
       text-transform: uppercase;
       letter-spacing: 1px;
     }
 
-    /* ── Buttons ─────────────────────────────────────────────── */
+    /* ── Buttons ───────────────────────────────────────────────── */
     .btn {
       padding: 12px;
       border: none;
@@ -83,26 +79,15 @@
     #btn-start { background: #ff4b4b; color: #fff; }
     #btn-stop  { background: #444;    color: #fff; display: none; }
 
-    /* ── Status ──────────────────────────────────────────────── */
-    #status {
-      font-size: 12px;
-      color: #666;
-      text-align: center;
-      max-width: 440px;
-      min-height: 16px;
-    }
-    #debug {
-      font-size: 10px;
-      color: #444;
-      text-align: center;
-      max-width: 440px;
-      word-break: break-all;
-    }
+    /* ── Info ──────────────────────────────────────────────────── */
+    #status { font-size: 12px; color: #666; text-align: center; max-width: 440px; }
+    #debug  { font-size: 10px; color: #444; text-align: center; max-width: 440px; word-break: break-all; }
+    #mode   { font-size: 10px; color: #336; background: #111a2e; border-radius: 4px; padding: 2px 8px; text-align: center; max-width: 440px; }
   </style>
 </head>
 <body>
 
-  <div class="scanner-wrap" id="scanner-wrap">
+  <div class="scanner-wrap">
     <div id="placeholder">Cámara inactiva</div>
     <video id="video" autoplay playsinline muted style="display:none"></video>
     <canvas id="overlay"></canvas>
@@ -116,6 +101,7 @@
   <button class="btn" id="btn-start" onclick="startScanner()">Iniciar Scanner</button>
   <button class="btn" id="btn-stop"  onclick="stopScanner()">Detener Scanner</button>
 
+  <div id="mode"></div>
   <div id="status">Listo</div>
   <div id="debug"></div>
 
@@ -123,8 +109,7 @@
     // ── Streamlit communication ────────────────────────────────────────────────
     window.addEventListener("load", function () {
       window.parent.postMessage(
-        { isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 },
-        "*"
+        { isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 }, "*"
       );
     });
     window.addEventListener("message", function (e) {
@@ -132,231 +117,325 @@
     });
     function sendValue(v) {
       window.parent.postMessage(
-        { isStreamlitMessage: true, type: "streamlit:setComponentValue", value: v, dataType: "json" },
-        "*"
+        { isStreamlitMessage: true, type: "streamlit:setComponentValue", value: v, dataType: "json" }, "*"
       );
     }
     function sendHeight() {
       window.parent.postMessage(
-        { isStreamlitMessage: true, type: "streamlit:setFrameHeight", height: document.body.scrollHeight + 24 },
-        "*"
+        { isStreamlitMessage: true, type: "streamlit:setFrameHeight", height: document.body.scrollHeight + 24 }, "*"
       );
     }
 
-    // ── Audio (Web Audio API) ──────────────────────────────────────────────────
+    // ── Audio ──────────────────────────────────────────────────────────────────
     var audioCtx = null;
-
-    function getAudioCtx() {
+    function getAudio() {
       if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       return audioCtx;
     }
-
     function beepSuccess() {
       try {
-        var ctx = getAudioCtx();
-        // Two short ascending tones — like a pistol scanner
+        var ctx = getAudio();
         [880, 1320].forEach(function (freq, i) {
-          var osc  = ctx.createOscillator();
-          var gain = ctx.createGain();
-          osc.connect(gain);
-          gain.connect(ctx.destination);
-          osc.type      = "sine";
-          osc.frequency.value = freq;
+          var o = ctx.createOscillator(), g = ctx.createGain();
+          o.connect(g); g.connect(ctx.destination);
+          o.type = "sine"; o.frequency.value = freq;
           var t = ctx.currentTime + i * 0.12;
-          gain.gain.setValueAtTime(0.35, t);
-          gain.gain.exponentialRampToValueAtTime(0.001, t + 0.10);
-          osc.start(t);
-          osc.stop(t + 0.10);
+          g.gain.setValueAtTime(0.35, t);
+          g.gain.exponentialRampToValueAtTime(0.001, t + 0.10);
+          o.start(t); o.stop(t + 0.10);
         });
       } catch (e) {}
     }
-
     function beepError() {
       try {
-        var ctx = getAudioCtx();
-        // Two low descending tones — error feel
+        var ctx = getAudio();
         [300, 200].forEach(function (freq, i) {
-          var osc  = ctx.createOscillator();
-          var gain = ctx.createGain();
-          osc.connect(gain);
-          gain.connect(ctx.destination);
-          osc.type      = "sawtooth";
-          osc.frequency.value = freq;
+          var o = ctx.createOscillator(), g = ctx.createGain();
+          o.connect(g); g.connect(ctx.destination);
+          o.type = "sawtooth"; o.frequency.value = freq;
           var t = ctx.currentTime + i * 0.18;
-          gain.gain.setValueAtTime(0.25, t);
-          gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
-          osc.start(t);
-          osc.stop(t + 0.15);
+          g.gain.setValueAtTime(0.25, t);
+          g.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+          o.start(t); o.stop(t + 0.15);
         });
       } catch (e) {}
     }
 
-    // ── Scanner state ──────────────────────────────────────────────────────────
-    var codeReader   = null;
-    var scanControls = null;   // IScannerControls from decodeFromConstraints
-    var lastCode     = null;
-    var lastTime     = 0;
-    var COOLDOWN     = 3000;
+    // ── State ──────────────────────────────────────────────────────────────────
+    var useNative    = ('BarcodeDetector' in window);
+    var detector     = null;   // BarcodeDetector instance
+    var codeReader   = null;   // ZXing fallback
+    var scanControls = null;   // ZXing controls
+    var videoStream  = null;
+    var scanning     = false;
+    var lastSent     = {};     // code → timestamp, cooldown per code
     var clearTimer   = null;
+    var COOLDOWN     = 3000;
 
     function setStatus(msg) { document.getElementById("status").textContent = msg; }
     function setDebug(msg)  { document.getElementById("debug").textContent  = msg; }
+    function setMode(msg)   { document.getElementById("mode").textContent   = msg; }
 
     // ── Start ──────────────────────────────────────────────────────────────────
     function startScanner() {
-      document.getElementById("btn-start").style.display  = "none";
-      document.getElementById("btn-stop").style.display   = "block";
+      document.getElementById("btn-start").style.display   = "none";
+      document.getElementById("btn-stop").style.display    = "block";
       document.getElementById("placeholder").style.display = "none";
-      document.getElementById("video").style.display      = "block";
-      setStatus("Cargando ZXing...");
+      document.getElementById("video").style.display       = "block";
+      setStatus("Solicitando acceso a cámara...");
       sendHeight();
 
+      var constraints = {
+        video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }
+      };
+
+      navigator.mediaDevices.getUserMedia(constraints)
+        .then(function (stream) {
+          videoStream = stream;
+          var video = document.getElementById("video");
+          video.srcObject = stream;
+          video.play();
+          video.onloadedmetadata = function () {
+            if (useNative) startNative(); else startZXing();
+          };
+        })
+        .catch(function (err) {
+          beepError();
+          setStatus("Error al acceder a cámara: " + (err.message || err));
+          resetButtons(); sendHeight();
+        });
+    }
+
+    // ── BarcodeDetector path (Chrome/Android — multi-code) ────────────────────
+    function startNative() {
+      var NATIVE_FORMATS = [
+        "qr_code","ean_13","ean_8","code_128","code_39",
+        "upc_a","upc_e","itf","data_matrix","pdf_417","aztec","codabar"
+      ];
+
+      BarcodeDetector.getSupportedFormats()
+        .then(function (supported) {
+          var formats = NATIVE_FORMATS.filter(function (f) { return supported.includes(f); });
+          detector  = new BarcodeDetector({ formats: formats });
+          scanning  = true;
+          setMode("Modo: BarcodeDetector nativo (multi-código)");
+          setStatus("Escaneando — apunta al/los código(s)");
+          sendHeight();
+          requestAnimationFrame(nativeScanLoop);
+        })
+        .catch(function () {
+          useNative = false;
+          startZXing();
+        });
+    }
+
+    function nativeScanLoop() {
+      if (!scanning) return;
+      var video = document.getElementById("video");
+      if (video.readyState < 2) { requestAnimationFrame(nativeScanLoop); return; }
+
+      detector.detect(video)
+        .then(function (barcodes) {
+          var overlay = document.getElementById("overlay");
+          var ctx     = overlay.getContext("2d");
+          var dW = video.clientWidth,  dH = video.clientHeight;
+          var vW = video.videoWidth,   vH = video.videoHeight;
+          overlay.width = dW; overlay.height = dH;
+          ctx.clearRect(0, 0, dW, dH);
+
+          var sx = dW / vW, sy = dH / vH;
+          var detected = [];
+
+          barcodes.forEach(function (b) {
+            var corners = b.cornerPoints.map(function (p) {
+              return { x: p.x * sx, y: p.y * sy };
+            });
+            drawPolygon(ctx, corners, b.rawValue);
+            detected.push({ code: b.rawValue, type: b.format.toUpperCase().replace(/_/g, "_") });
+          });
+
+          if (detected.length > 0) onDetectedMultiple(detected);
+
+          // Auto-clear overlay after 1.5 s of no detection
+          clearTimeout(clearTimer);
+          if (barcodes.length === 0) {
+            clearTimer = setTimeout(function () {
+              ctx.clearRect(0, 0, dW, dH);
+            }, 1500);
+          }
+        })
+        .catch(function () {})
+        .finally(function () {
+          if (scanning) requestAnimationFrame(nativeScanLoop);
+        });
+    }
+
+    // ── ZXing path (iOS/Firefox — single code) ────────────────────────────────
+    function startZXing() {
       if (typeof ZXing === "undefined") {
-        setStatus("Error: librería ZXing no cargó. Verifica conexión.");
+        setStatus("Error: ZXing no disponible. Actualiza el browser.");
         resetButtons(); sendHeight(); return;
       }
 
+      setMode("Modo: ZXing (un código a la vez)");
+
       var hints = new Map();
       hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
-        ZXing.BarcodeFormat.QR_CODE,
-        ZXing.BarcodeFormat.EAN_13,
-        ZXing.BarcodeFormat.EAN_8,
-        ZXing.BarcodeFormat.CODE_128,
-        ZXing.BarcodeFormat.CODE_39,
-        ZXing.BarcodeFormat.UPC_A,
-        ZXing.BarcodeFormat.UPC_E,
-        ZXing.BarcodeFormat.ITF,
-        ZXing.BarcodeFormat.DATA_MATRIX,
-        ZXing.BarcodeFormat.PDF_417,
+        ZXing.BarcodeFormat.QR_CODE,    ZXing.BarcodeFormat.EAN_13,
+        ZXing.BarcodeFormat.EAN_8,      ZXing.BarcodeFormat.CODE_128,
+        ZXing.BarcodeFormat.CODE_39,    ZXing.BarcodeFormat.UPC_A,
+        ZXing.BarcodeFormat.UPC_E,      ZXing.BarcodeFormat.ITF,
+        ZXing.BarcodeFormat.DATA_MATRIX, ZXing.BarcodeFormat.PDF_417,
       ]);
       hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
 
-      // 300 ms between decode attempts
       codeReader = new ZXing.BrowserMultiFormatReader(hints, 300);
 
-      setStatus("Solicitando acceso a cámara...");
+      // Pass the existing stream to ZXing via the video element
+      var video = document.getElementById("video");
+      codeReader.decodeFromStream(videoStream, video, function (result, error) {
+        if (result) {
+          var text    = result.getText();
+          var fmtEnum = result.getBarcodeFormat();
+          var fmtName = ZXing.BarcodeFormat[fmtEnum] || String(fmtEnum);
+          var pts     = result.getResultPoints();
 
-      codeReader.decodeFromConstraints(
-        { video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } } },
-        "video",
-        function (result, error) {
-          if (result) {
-            onDetected(result);
-          } else if (error && !(error instanceof ZXing.NotFoundException)) {
-            setDebug("scan err: " + error.message);
+          var overlay = document.getElementById("overlay");
+          var ctx     = overlay.getContext("2d");
+          var dW = video.clientWidth, dH = video.clientHeight;
+          var vW = video.videoWidth,  vH = video.videoHeight;
+          overlay.width = dW; overlay.height = dH;
+          ctx.clearRect(0, 0, dW, dH);
+
+          if (pts && pts.length > 0) {
+            var sx = dW / vW, sy = dH / vH;
+            var corners = pts.map(function (p) {
+              return { x: p.getX() * sx, y: p.getY() * sy };
+            });
+            drawPolygon(ctx, corners, text);
           }
+
+          onDetectedMultiple([{ code: text, type: fmtName }]);
+
+          clearTimeout(clearTimer);
+          clearTimer = setTimeout(function () {
+            ctx.clearRect(0, 0, dW, dH);
+          }, 1500);
         }
-      ).then(function (controls) {
-        scanControls = controls;
+      }).then(function (ctrl) {
+        scanControls = ctrl;
+        scanning = true;
         setStatus("Escaneando — apunta al código");
         sendHeight();
       }).catch(function (err) {
         beepError();
-        setStatus("Error al iniciar cámara: " + (err.message || err));
-        setDebug(String(err));
+        setStatus("Error ZXing: " + (err.message || err));
         resetButtons(); sendHeight();
       });
     }
 
-    // ── Detection callback ─────────────────────────────────────────────────────
-    function onDetected(result) {
-      var text    = result.getText();
-      var fmtEnum = result.getBarcodeFormat();
-      var fmtName = ZXing.BarcodeFormat[fmtEnum] || String(fmtEnum);
-      var now     = Date.now();
+    // ── Process detected codes ─────────────────────────────────────────────────
+    function onDetectedMultiple(codes) {
+      var now      = Date.now();
+      var toSend   = [];
+      var lastCode = null;
 
-      // Draw bounding box on overlay
-      var pts = result.getResultPoints();
-      if (pts && pts.length > 0) drawBox(pts);
+      codes.forEach(function (item) {
+        var code = item.code;
+        var prev = lastSent[code] || 0;
+        if (now - prev >= COOLDOWN) {
+          lastSent[code] = now;
+          toSend.push(item);
+          lastCode = item;
+        }
+      });
 
-      // Show result prominently
+      if (toSend.length === 0) return;
+
+      // Show last detected on screen
       document.getElementById("result-wrap").style.display = "block";
-      document.getElementById("result-code").textContent   = text;
-      document.getElementById("result-type").textContent   = fmtName;
+      document.getElementById("result-code").textContent   = toSend.map(function (i) { return i.code; }).join("  |  ");
+      document.getElementById("result-type").textContent   = toSend.map(function (i) { return i.type; }).join("  ·  ");
+
+      // One beep per batch (regardless of count)
+      beepSuccess();
+      setDebug("→ " + toSend.length + " código(s): " + toSend.map(function (i) { return i.code; }).join(", "));
+
+      sendValue({ codes: toSend, scan_id: now });
       sendHeight();
-
-      // Auto-clear box after 2 s of no new detection
-      clearTimeout(clearTimer);
-      clearTimer = setTimeout(function () {
-        var ov = document.getElementById("overlay");
-        ov.getContext("2d").clearRect(0, 0, ov.width, ov.height);
-      }, 2000);
-
-      // Send to Streamlit (same code respects cooldown)
-      if (text !== lastCode || now - lastTime >= COOLDOWN) {
-        lastCode = text;
-        lastTime = now;
-        beepSuccess();
-        setDebug("→ Streamlit: " + text + " [" + fmtName + "]");
-        sendValue({ code: text, type: fmtName, scan_id: now });
-      }
     }
 
-    // ── Bounding box drawing ───────────────────────────────────────────────────
-    function drawBox(pts) {
-      var video   = document.getElementById("video");
-      var overlay = document.getElementById("overlay");
-      var ctx     = overlay.getContext("2d");
+    // ── Draw polygon bounding box with label ───────────────────────────────────
+    function drawPolygon(ctx, corners, label) {
+      if (!corners || corners.length < 2) return;
 
-      var vW = video.videoWidth  || 640;
-      var vH = video.videoHeight || 480;
-      var dW = overlay.clientWidth  || video.clientWidth  || 320;
-      var dH = overlay.clientHeight || video.clientHeight || 240;
+      // Compute bounding rect for padding and label placement
+      var xs  = corners.map(function (p) { return p.x; });
+      var ys  = corners.map(function (p) { return p.y; });
+      var minX = Math.min.apply(null, xs);
+      var minY = Math.min.apply(null, ys);
+      var maxX = Math.max.apply(null, xs);
 
-      overlay.width  = dW;
-      overlay.height = dH;
+      // Fill polygon
+      ctx.beginPath();
+      ctx.moveTo(corners[0].x, corners[0].y);
+      for (var i = 1; i < corners.length; i++) ctx.lineTo(corners[i].x, corners[i].y);
+      ctx.closePath();
+      ctx.fillStyle   = "rgba(0, 255, 136, 0.10)";
+      ctx.fill();
 
-      var sx = dW / vW;
-      var sy = dH / vH;
-
-      ctx.clearRect(0, 0, dW, dH);
-
-      var xs = pts.map(function (p) { return p.getX() * sx; });
-      var ys = pts.map(function (p) { return p.getY() * sy; });
-      var pad = 12;
-      var x = Math.min.apply(null, xs) - pad;
-      var y = Math.min.apply(null, ys) - pad;
-      var w = Math.max.apply(null, xs) - x + pad;
-      var h = Math.max.apply(null, ys) - y + pad;
-      if (h < 50) { y -= 20; h += 40; } // ensure visible height for 1D barcodes
-
-      // Semi-transparent fill
-      ctx.fillStyle = "rgba(0, 255, 136, 0.08)";
-      ctx.fillRect(x, y, w, h);
-
-      // Border
+      // Stroke polygon
+      ctx.beginPath();
+      ctx.moveTo(corners[0].x, corners[0].y);
+      for (var j = 1; j < corners.length; j++) ctx.lineTo(corners[j].x, corners[j].y);
+      ctx.closePath();
       ctx.strokeStyle = "#00ff88";
       ctx.lineWidth   = 2.5;
-      ctx.strokeRect(x, y, w, h);
+      ctx.stroke();
 
       // Corner brackets
-      var c = 18;
+      var c = 14;
       ctx.strokeStyle = "#00ff88";
       ctx.lineWidth   = 4;
-      ctx.beginPath();
-      // TL
-      ctx.moveTo(x,     y + c); ctx.lineTo(x,     y); ctx.lineTo(x + c, y);
-      // TR
-      ctx.moveTo(x+w-c, y);     ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + c);
-      // BL
-      ctx.moveTo(x,     y+h-c); ctx.lineTo(x,     y + h); ctx.lineTo(x + c, y + h);
-      // BR
-      ctx.moveTo(x+w-c, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - c);
-      ctx.stroke();
+      corners.forEach(function (pt, idx) {
+        var nx = corners[(idx + 1) % corners.length];
+        var px = corners[(idx - 1 + corners.length) % corners.length];
+        ctx.beginPath();
+        ctx.moveTo(pt.x + (px.x - pt.x) / Math.hypot(px.x - pt.x, px.y - pt.y) * c,
+                   pt.y + (px.y - pt.y) / Math.hypot(px.x - pt.x, px.y - pt.y) * c);
+        ctx.lineTo(pt.x, pt.y);
+        ctx.lineTo(pt.x + (nx.x - pt.x) / Math.hypot(nx.x - pt.x, nx.y - pt.y) * c,
+                   pt.y + (nx.y - pt.y) / Math.hypot(nx.x - pt.x, nx.y - pt.y) * c);
+        ctx.stroke();
+      });
+
+      // Label background + text
+      if (label) {
+        ctx.font = "bold 12px 'Courier New', monospace";
+        var tw  = ctx.measureText(label).width;
+        var lx  = Math.max(minX, 2);
+        var ly  = Math.max(minY - 6, 18);
+        ctx.fillStyle = "rgba(0, 30, 0, 0.75)";
+        ctx.fillRect(lx - 2, ly - 14, tw + 8, 17);
+        ctx.fillStyle = "#00ff88";
+        ctx.fillText(label, lx + 2, ly);
+      }
     }
 
     // ── Stop ───────────────────────────────────────────────────────────────────
     function stopScanner() {
+      scanning = false;
       if (scanControls) { try { scanControls.stop(); } catch (e) {} scanControls = null; }
       if (codeReader)   { try { codeReader.reset();  } catch (e) {} codeReader   = null; }
-      document.getElementById("video").style.display      = "none";
+      if (videoStream)  { videoStream.getTracks().forEach(function (t) { t.stop(); }); videoStream = null; }
+
+      var video = document.getElementById("video");
+      video.style.display = "none"; video.srcObject = null;
       document.getElementById("placeholder").style.display = "block";
       document.getElementById("result-wrap").style.display = "none";
-      var ov = document.getElementById("overlay");
-      ov.getContext("2d").clearRect(0, 0, ov.width, ov.height);
+      document.getElementById("overlay").getContext("2d").clearRect(0, 0, 9999, 9999);
       resetButtons();
-      setStatus("Scanner detenido");
-      setDebug("");
+      setStatus("Scanner detenido"); setDebug(""); setMode("");
       sendHeight();
     }
 
