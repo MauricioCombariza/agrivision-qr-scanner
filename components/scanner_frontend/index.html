@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>QR Scanner</title>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0e1117;
+      color: #fafafa;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 12px;
+      gap: 10px;
+    }
+    #reader {
+      width: 100%;
+      max-width: 420px;
+      border-radius: 12px;
+      overflow: hidden;
+      background: #1e2130;
+    }
+    #reader video { width: 100%; border-radius: 12px; }
+    /* Override html5-qrcode internal styles for dark theme */
+    #reader__scan_region { background: transparent !important; }
+    #reader__dashboard { background: #1e2130 !important; border-top: none !important; }
+    #reader__dashboard_section_csr button {
+      background: #ff4b4b !important;
+      color: white !important;
+      border: none !important;
+      border-radius: 6px !important;
+      padding: 8px 16px !important;
+      cursor: pointer !important;
+    }
+    .btn {
+      padding: 12px 24px;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      cursor: pointer;
+      font-weight: 600;
+      width: 100%;
+      max-width: 420px;
+      transition: opacity 0.2s;
+    }
+    .btn:active { opacity: 0.8; }
+    #btn-start { background: #ff4b4b; color: white; }
+    #btn-stop { background: #555; color: white; display: none; }
+    #status {
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 14px;
+      width: 100%;
+      max-width: 420px;
+      min-height: 40px;
+      text-align: center;
+      font-weight: 500;
+      word-break: break-all;
+    }
+    #status.new { background: #1a472a; color: #69db7c; border: 1px solid #2d6a4f; }
+    #status.dup { background: #3b2000; color: #ffa94d; border: 1px solid #6b3a00; }
+    #status.idle { background: #1e2130; color: #888; border: 1px solid #333; }
+    #status.error { background: #3b0f0f; color: #ff6b6b; border: 1px solid #6b1f1f; }
+  </style>
+</head>
+<body>
+  <div id="reader"></div>
+  <button class="btn" id="btn-start" onclick="startScanner()">Iniciar Scanner</button>
+  <button class="btn" id="btn-stop" onclick="stopScanner()">Detener Scanner</button>
+  <div id="status" class="idle">Presiona "Iniciar Scanner" para activar la cámara</div>
+
+  <script>
+    // ── Streamlit postMessage protocol ──────────────────────────────────────
+    window.addEventListener("load", function () {
+      window.parent.postMessage(
+        { isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 },
+        "*"
+      );
+    });
+
+    function sendValue(value) {
+      window.parent.postMessage(
+        { isStreamlitMessage: true, type: "streamlit:setComponentValue", value: value, dataType: "json" },
+        "*"
+      );
+    }
+
+    function setHeight() {
+      window.parent.postMessage(
+        { isStreamlitMessage: true, type: "streamlit:setFrameHeight", height: document.body.scrollHeight + 16 },
+        "*"
+      );
+    }
+
+    window.addEventListener("message", function (evt) {
+      if (evt.data && evt.data.type === "streamlit:render") {
+        setHeight();
+      }
+    });
+
+    // ── Scanner state ────────────────────────────────────────────────────────
+    var scanner = null;
+    var lastSentCode = null;
+    var lastSentTime = 0;
+    var COOLDOWN_MS = 3000;
+
+    function startScanner() {
+      document.getElementById("btn-start").style.display = "none";
+      document.getElementById("btn-stop").style.display = "block";
+      setStatus("Iniciando cámara...", "idle");
+      setHeight();
+
+      scanner = new Html5Qrcode("reader");
+
+      var config = {
+        fps: 10,
+        qrbox: function (viewfinderWidth, viewfinderHeight) {
+          var side = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.75);
+          return { width: side, height: Math.floor(side * 0.6) };
+        }
+      };
+
+      scanner
+        .start({ facingMode: "environment" }, config, onScanSuccess, function () {})
+        .then(function () {
+          setStatus("Cámara activa — apunta al código", "idle");
+          setHeight();
+        })
+        .catch(function (err) {
+          setStatus("Error al iniciar cámara: " + err, "error");
+          document.getElementById("btn-start").style.display = "block";
+          document.getElementById("btn-stop").style.display = "none";
+          setHeight();
+        });
+    }
+
+    function stopScanner() {
+      if (scanner) {
+        scanner.stop().then(function () {
+          scanner = null;
+          document.getElementById("btn-start").style.display = "block";
+          document.getElementById("btn-stop").style.display = "none";
+          setStatus("Scanner detenido", "idle");
+          setHeight();
+        });
+      }
+    }
+
+    function onScanSuccess(decodedText, decodedResult) {
+      var now = Date.now();
+      if (decodedText === lastSentCode && now - lastSentTime < COOLDOWN_MS) return;
+
+      lastSentCode = decodedText;
+      lastSentTime = now;
+
+      var formatName = "UNKNOWN";
+      try { formatName = decodedResult.result.format.formatName; } catch (e) {}
+
+      setStatus("Detectado: " + decodedText, "new");
+
+      sendValue({ code: decodedText, type: formatName, scan_id: now });
+    }
+
+    function setStatus(msg, cls) {
+      var el = document.getElementById("status");
+      el.textContent = msg;
+      el.className = cls;
+      setHeight();
+    }
+  </script>
+</body>
+</html>
