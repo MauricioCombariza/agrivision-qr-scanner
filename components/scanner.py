@@ -6,4 +6,4 @@ _scanner_component = components.declare_component("qr_scanner", path=_FRONTEND_D
 
 
 def qr_scanner(key: str = "qr_scanner") -> dict | None:
-    return _scanner_component(key=key, default=None)
+    return _scanner_component(key=key, default=None, height=560)

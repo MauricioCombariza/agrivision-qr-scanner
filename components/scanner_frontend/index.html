@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <!-- ZXing loaded as fallback for iOS/Firefox (BarcodeDetector not available there) -->
   <script src="https://unpkg.com/@zxing/library@0.19.1/umd/index.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { min-height: 520px; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       background: #0e1117;
@@ -18,7 +18,7 @@
       gap: 8px;
     }
 
-    /* ── Camera ────────────────────────────────────────────────── */
+    /* ── Camera area ───────────────────────────────────────────── */
     .scanner-wrap {
       position: relative;
       width: 100%;
@@ -26,9 +26,14 @@
       background: #1a1f2e;
       border-radius: 12px;
       overflow: hidden;
-      min-height: 80px;
+      min-height: 280px;
     }
-    #video { width: 100%; display: block; }
+    #video {
+      width: 100%;
+      display: block;
+      /* Critical for iOS: */
+      -webkit-playsinline: true;
+    }
     #overlay {
       position: absolute;
       top: 0; left: 0;
@@ -36,13 +41,16 @@
       pointer-events: none;
     }
     #placeholder {
-      padding: 32px;
-      text-align: center;
-      color: #555;
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #444;
       font-size: 13px;
     }
 
-    /* ── Last detected code ────────────────────────────────────── */
+    /* ── Result ────────────────────────────────────────────────── */
     #result-wrap { width: 100%; max-width: 440px; display: none; }
     #result-code {
       font-family: 'Courier New', monospace;
@@ -67,7 +75,7 @@
 
     /* ── Buttons ───────────────────────────────────────────────── */
     .btn {
-      padding: 12px;
+      padding: 13px;
       border: none;
       border-radius: 8px;
       font-size: 15px;
@@ -80,16 +88,16 @@
     #btn-stop  { background: #444;    color: #fff; display: none; }
 
     /* ── Info ──────────────────────────────────────────────────── */
-    #status { font-size: 12px; color: #666; text-align: center; max-width: 440px; }
-    #debug  { font-size: 10px; color: #444; text-align: center; max-width: 440px; word-break: break-all; }
-    #mode   { font-size: 10px; color: #336; background: #111a2e; border-radius: 4px; padding: 2px 8px; text-align: center; max-width: 440px; }
+    #status { font-size: 13px; color: #aaa; text-align: center; max-width: 440px; min-height: 18px; }
+    #debug  { font-size: 10px; color: #555; text-align: center; max-width: 440px; word-break: break-all; min-height: 14px; }
+    #mode   { font-size: 10px; color: #334; background: #111926; border-radius: 4px; padding: 2px 8px; }
   </style>
 </head>
 <body>
 
-  <div class="scanner-wrap">
+  <div class="scanner-wrap" id="scanner-wrap">
     <div id="placeholder">Cámara inactiva</div>
-    <video id="video" autoplay playsinline muted style="display:none"></video>
+    <video id="video" autoplay muted playsinline></video>
     <canvas id="overlay"></canvas>
   </div>
 
@@ -111,18 +119,21 @@
       window.parent.postMessage(
         { isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 }, "*"
       );
+      // Report height after DOM renders
+      setTimeout(doSendHeight, 200);
     });
     window.addEventListener("message", function (e) {
-      if (e.data && e.data.type === "streamlit:render") sendHeight();
+      if (e.data && e.data.type === "streamlit:render") setTimeout(doSendHeight, 100);
     });
     function sendValue(v) {
       window.parent.postMessage(
         { isStreamlitMessage: true, type: "streamlit:setComponentValue", value: v, dataType: "json" }, "*"
       );
     }
-    function sendHeight() {
+    function doSendHeight() {
+      var h = Math.max(document.body.scrollHeight, 520);
       window.parent.postMessage(
-        { isStreamlitMessage: true, type: "streamlit:setFrameHeight", height: document.body.scrollHeight + 24 }, "*"
+        { isStreamlitMessage: true, type: "streamlit:setFrameHeight", height: h }, "*"
       );
     }
 
@@ -135,10 +146,10 @@
     function beepSuccess() {
       try {
         var ctx = getAudio();
-        [880, 1320].forEach(function (freq, i) {
+        [880, 1320].forEach(function (hz, i) {
           var o = ctx.createOscillator(), g = ctx.createGain();
           o.connect(g); g.connect(ctx.destination);
-          o.type = "sine"; o.frequency.value = freq;
+          o.type = "sine"; o.frequency.value = hz;
           var t = ctx.currentTime + i * 0.12;
           g.gain.setValueAtTime(0.35, t);
           g.gain.exponentialRampToValueAtTime(0.001, t + 0.10);
@@ -149,10 +160,10 @@
     function beepError() {
       try {
         var ctx = getAudio();
-        [300, 200].forEach(function (freq, i) {
+        [300, 200].forEach(function (hz, i) {
           var o = ctx.createOscillator(), g = ctx.createGain();
           o.connect(g); g.connect(ctx.destination);
-          o.type = "sawtooth"; o.frequency.value = freq;
+          o.type = "sawtooth"; o.frequency.value = hz;
           var t = ctx.currentTime + i * 0.18;
           g.gain.setValueAtTime(0.25, t);
           g.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
@@ -163,12 +174,12 @@
 
     // ── State ──────────────────────────────────────────────────────────────────
     var useNative    = ('BarcodeDetector' in window);
-    var detector     = null;   // BarcodeDetector instance
-    var codeReader   = null;   // ZXing fallback
-    var scanControls = null;   // ZXing controls
+    var detector     = null;
+    var codeReader   = null;
+    var scanControls = null;
     var videoStream  = null;
     var scanning     = false;
-    var lastSent     = {};     // code → timestamp, cooldown per code
+    var lastSent     = {};
     var clearTimer   = null;
     var COOLDOWN     = 3000;
 
@@ -181,58 +192,102 @@
       document.getElementById("btn-start").style.display   = "none";
       document.getElementById("btn-stop").style.display    = "block";
       document.getElementById("placeholder").style.display = "none";
-      document.getElementById("video").style.display       = "block";
-      setStatus("Solicitando acceso a cámara...");
-      sendHeight();
+      setStatus("Solicitando cámara...");
+
+      var video = document.getElementById("video");
+      // Set all autoplay attributes programmatically (iOS + Chrome requirement)
+      video.muted      = true;
+      video.autoplay   = true;
+      video.playsInline = true;
+      video.setAttribute("muted",      "");
+      video.setAttribute("autoplay",   "");
+      video.setAttribute("playsinline","");
 
       var constraints = {
-        video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }
+        video: {
+          facingMode: { ideal: "environment" },
+          width:  { ideal: 1280 },
+          height: { ideal: 720 }
+        }
       };
 
       navigator.mediaDevices.getUserMedia(constraints)
         .then(function (stream) {
-          videoStream = stream;
-          var video = document.getElementById("video");
+          videoStream  = stream;
           video.srcObject = stream;
-          video.play();
-          video.onloadedmetadata = function () {
-            if (useNative) startNative(); else startZXing();
-          };
+          setStatus("Activando cámara...");
+          setDebug("stream OK — tracks: " + stream.getVideoTracks().length);
+
+          // play() must be called; handle both success and failure
+          var p = video.play();
+          if (p && typeof p.then === "function") {
+            p.then(function () {
+              setDebug("play() OK — videoWidth: " + video.videoWidth);
+              waitForVideo(video);
+            }).catch(function (e) {
+              // play() blocked — add tap-to-play fallback
+              setStatus("Toca la imagen para iniciar el video");
+              setDebug("play() blocked: " + e.name);
+              document.getElementById("scanner-wrap").style.cursor = "pointer";
+              document.getElementById("scanner-wrap").onclick = function () {
+                video.play().then(function () { waitForVideo(video); });
+                document.getElementById("scanner-wrap").onclick = null;
+                document.getElementById("scanner-wrap").style.cursor = "";
+              };
+            });
+          } else {
+            // Older browsers where play() is synchronous
+            waitForVideo(video);
+          }
         })
         .catch(function (err) {
           beepError();
-          setStatus("Error al acceder a cámara: " + (err.message || err));
-          resetButtons(); sendHeight();
+          setStatus("Error al acceder a cámara: " + err.name);
+          setDebug(err.message);
+          resetButtons();
+          doSendHeight();
         });
     }
 
-    // ── BarcodeDetector path (Chrome/Android — multi-code) ────────────────────
-    function startNative() {
-      var NATIVE_FORMATS = [
-        "qr_code","ean_13","ean_8","code_128","code_39",
-        "upc_a","upc_e","itf","data_matrix","pdf_417","aztec","codabar"
-      ];
+    // Wait until video has real dimensions before starting detector
+    function waitForVideo(video) {
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        setStatus("Cámara lista — iniciando detector...");
+        setDebug("resolución: " + video.videoWidth + "×" + video.videoHeight);
+        doSendHeight();
+        if (useNative) startNative(video); else startZXing(video);
+      } else {
+        // Retry until frame data is available
+        setTimeout(function () { waitForVideo(video); }, 100);
+      }
+    }
+
+    // ── BarcodeDetector (Android Chrome — multi-code) ──────────────────────────
+    function startNative(video) {
+      var ALL = ["qr_code","ean_13","ean_8","code_128","code_39",
+                 "upc_a","upc_e","itf","data_matrix","pdf_417","aztec","codabar"];
 
       BarcodeDetector.getSupportedFormats()
         .then(function (supported) {
-          var formats = NATIVE_FORMATS.filter(function (f) { return supported.includes(f); });
-          detector  = new BarcodeDetector({ formats: formats });
+          var fmts = ALL.filter(function (f) { return supported.includes(f); });
+          setDebug("BarcodeDetector OK — formatos: " + fmts.length);
+          detector  = new BarcodeDetector({ formats: fmts });
           scanning  = true;
-          setMode("Modo: BarcodeDetector nativo (multi-código)");
+          setMode("Multi-código (BarcodeDetector nativo)");
           setStatus("Escaneando — apunta al/los código(s)");
-          sendHeight();
-          requestAnimationFrame(nativeScanLoop);
+          doSendHeight();
+          requestAnimationFrame(function () { nativeLoop(video); });
         })
-        .catch(function () {
+        .catch(function (e) {
+          setDebug("BarcodeDetector.getSupportedFormats() falló: " + e);
           useNative = false;
-          startZXing();
+          startZXing(video);
         });
     }
 
-    function nativeScanLoop() {
+    function nativeLoop(video) {
       if (!scanning) return;
-      var video = document.getElementById("video");
-      if (video.readyState < 2) { requestAnimationFrame(nativeScanLoop); return; }
+      if (video.readyState < 2) { requestAnimationFrame(function () { nativeLoop(video); }); return; }
 
       detector.detect(video)
         .then(function (barcodes) {
@@ -243,41 +298,33 @@
           overlay.width = dW; overlay.height = dH;
           ctx.clearRect(0, 0, dW, dH);
 
-          var sx = dW / vW, sy = dH / vH;
-          var detected = [];
-
-          barcodes.forEach(function (b) {
-            var corners = b.cornerPoints.map(function (p) {
-              return { x: p.x * sx, y: p.y * sy };
+          if (barcodes.length > 0) {
+            var sx = dW / vW, sy = dH / vH;
+            var detected = barcodes.map(function (b) {
+              var corners = b.cornerPoints.map(function (p) {
+                return { x: p.x * sx, y: p.y * sy };
+              });
+              drawPolygon(ctx, corners, b.rawValue);
+              return { code: b.rawValue, type: b.format.toUpperCase() };
             });
-            drawPolygon(ctx, corners, b.rawValue);
-            detected.push({ code: b.rawValue, type: b.format.toUpperCase().replace(/_/g, "_") });
-          });
+            onDetectedBatch(detected);
 
-          if (detected.length > 0) onDetectedMultiple(detected);
-
-          // Auto-clear overlay after 1.5 s of no detection
-          clearTimeout(clearTimer);
-          if (barcodes.length === 0) {
-            clearTimer = setTimeout(function () {
-              ctx.clearRect(0, 0, dW, dH);
-            }, 1500);
+            clearTimeout(clearTimer);
+            clearTimer = setTimeout(function () { ctx.clearRect(0, 0, dW, dH); }, 1500);
           }
         })
         .catch(function () {})
         .finally(function () {
-          if (scanning) requestAnimationFrame(nativeScanLoop);
+          if (scanning) requestAnimationFrame(function () { nativeLoop(video); });
         });
     }
 
-    // ── ZXing path (iOS/Firefox — single code) ────────────────────────────────
-    function startZXing() {
+    // ── ZXing fallback (iOS / Firefox — single code) ──────────────────────────
+    function startZXing(video) {
       if (typeof ZXing === "undefined") {
-        setStatus("Error: ZXing no disponible. Actualiza el browser.");
-        resetButtons(); sendHeight(); return;
+        setStatus("Error: ZXing no cargó. Verifica tu conexión e intenta de nuevo.");
+        resetButtons(); doSendHeight(); return;
       }
-
-      setMode("Modo: ZXing (un código a la vez)");
 
       var hints = new Map();
       hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
@@ -288,134 +335,107 @@
         ZXing.BarcodeFormat.DATA_MATRIX, ZXing.BarcodeFormat.PDF_417,
       ]);
       hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
-
       codeReader = new ZXing.BrowserMultiFormatReader(hints, 300);
 
-      // Pass the existing stream to ZXing via the video element
-      var video = document.getElementById("video");
+      setMode("Un código a la vez (ZXing — iOS/Firefox)");
+      setStatus("Escaneando — apunta al código");
+      setDebug("ZXing listo");
+      doSendHeight();
+
       codeReader.decodeFromStream(videoStream, video, function (result, error) {
-        if (result) {
-          var text    = result.getText();
-          var fmtEnum = result.getBarcodeFormat();
-          var fmtName = ZXing.BarcodeFormat[fmtEnum] || String(fmtEnum);
-          var pts     = result.getResultPoints();
+        if (!result) return;
+        var text = result.getText();
+        var fmt  = ZXing.BarcodeFormat[result.getBarcodeFormat()] || "UNKNOWN";
+        var pts  = result.getResultPoints();
+        var vW   = video.videoWidth,  vH = video.videoHeight;
+        var dW   = video.clientWidth, dH = video.clientHeight;
+        var overlay = document.getElementById("overlay");
+        var ctx     = overlay.getContext("2d");
+        overlay.width = dW; overlay.height = dH;
+        ctx.clearRect(0, 0, dW, dH);
 
-          var overlay = document.getElementById("overlay");
-          var ctx     = overlay.getContext("2d");
-          var dW = video.clientWidth, dH = video.clientHeight;
-          var vW = video.videoWidth,  vH = video.videoHeight;
-          overlay.width = dW; overlay.height = dH;
-          ctx.clearRect(0, 0, dW, dH);
-
-          if (pts && pts.length > 0) {
-            var sx = dW / vW, sy = dH / vH;
-            var corners = pts.map(function (p) {
-              return { x: p.getX() * sx, y: p.getY() * sy };
-            });
-            drawPolygon(ctx, corners, text);
-          }
-
-          onDetectedMultiple([{ code: text, type: fmtName }]);
-
-          clearTimeout(clearTimer);
-          clearTimer = setTimeout(function () {
-            ctx.clearRect(0, 0, dW, dH);
-          }, 1500);
+        if (pts && pts.length > 0) {
+          var sx = dW / vW, sy = dH / vH;
+          var corners = pts.map(function (p) {
+            return { x: p.getX() * sx, y: p.getY() * sy };
+          });
+          drawPolygon(ctx, corners, text);
         }
-      }).then(function (ctrl) {
-        scanControls = ctrl;
-        scanning = true;
-        setStatus("Escaneando — apunta al código");
-        sendHeight();
-      }).catch(function (err) {
+
+        onDetectedBatch([{ code: text, type: fmt }]);
+        clearTimeout(clearTimer);
+        clearTimer = setTimeout(function () { ctx.clearRect(0, 0, dW, dH); }, 1500);
+      })
+      .then(function (ctrl) { scanControls = ctrl; scanning = true; })
+      .catch(function (e) {
         beepError();
-        setStatus("Error ZXing: " + (err.message || err));
-        resetButtons(); sendHeight();
+        setStatus("Error ZXing: " + (e.message || e));
+        resetButtons(); doSendHeight();
       });
     }
 
-    // ── Process detected codes ─────────────────────────────────────────────────
-    function onDetectedMultiple(codes) {
-      var now      = Date.now();
-      var toSend   = [];
-      var lastCode = null;
-
-      codes.forEach(function (item) {
-        var code = item.code;
-        var prev = lastSent[code] || 0;
-        if (now - prev >= COOLDOWN) {
-          lastSent[code] = now;
-          toSend.push(item);
-          lastCode = item;
-        }
+    // ── Process a batch of detected codes ──────────────────────────────────────
+    function onDetectedBatch(codes) {
+      var now    = Date.now();
+      var toSend = codes.filter(function (item) {
+        var prev = lastSent[item.code] || 0;
+        if (now - prev < COOLDOWN) return false;
+        lastSent[item.code] = now;
+        return true;
       });
-
       if (toSend.length === 0) return;
 
-      // Show last detected on screen
       document.getElementById("result-wrap").style.display = "block";
-      document.getElementById("result-code").textContent   = toSend.map(function (i) { return i.code; }).join("  |  ");
-      document.getElementById("result-type").textContent   = toSend.map(function (i) { return i.type; }).join("  ·  ");
+      document.getElementById("result-code").textContent   =
+        toSend.map(function (i) { return i.code; }).join("  |  ");
+      document.getElementById("result-type").textContent   =
+        toSend.map(function (i) { return i.type; }).join("  ·  ");
 
-      // One beep per batch (regardless of count)
       beepSuccess();
-      setDebug("→ " + toSend.length + " código(s): " + toSend.map(function (i) { return i.code; }).join(", "));
-
+      setDebug("→ " + toSend.map(function (i) { return i.code; }).join(", "));
       sendValue({ codes: toSend, scan_id: now });
-      sendHeight();
+      doSendHeight();
     }
 
-    // ── Draw polygon bounding box with label ───────────────────────────────────
+    // ── Draw polygon bounding box with code label ──────────────────────────────
     function drawPolygon(ctx, corners, label) {
       if (!corners || corners.length < 2) return;
 
-      // Compute bounding rect for padding and label placement
-      var xs  = corners.map(function (p) { return p.x; });
-      var ys  = corners.map(function (p) { return p.y; });
-      var minX = Math.min.apply(null, xs);
-      var minY = Math.min.apply(null, ys);
-      var maxX = Math.max.apply(null, xs);
+      var xs = corners.map(function (p) { return p.x; });
+      var ys = corners.map(function (p) { return p.y; });
 
-      // Fill polygon
       ctx.beginPath();
       ctx.moveTo(corners[0].x, corners[0].y);
       for (var i = 1; i < corners.length; i++) ctx.lineTo(corners[i].x, corners[i].y);
       ctx.closePath();
-      ctx.fillStyle   = "rgba(0, 255, 136, 0.10)";
+      ctx.fillStyle   = "rgba(0,255,136,0.10)";
       ctx.fill();
-
-      // Stroke polygon
-      ctx.beginPath();
-      ctx.moveTo(corners[0].x, corners[0].y);
-      for (var j = 1; j < corners.length; j++) ctx.lineTo(corners[j].x, corners[j].y);
-      ctx.closePath();
       ctx.strokeStyle = "#00ff88";
       ctx.lineWidth   = 2.5;
       ctx.stroke();
 
-      // Corner brackets
+      // Corner L-brackets
       var c = 14;
-      ctx.strokeStyle = "#00ff88";
-      ctx.lineWidth   = 4;
+      ctx.lineWidth = 4;
       corners.forEach(function (pt, idx) {
         var nx = corners[(idx + 1) % corners.length];
         var px = corners[(idx - 1 + corners.length) % corners.length];
+        var d1 = Math.hypot(px.x - pt.x, px.y - pt.y) || 1;
+        var d2 = Math.hypot(nx.x - pt.x, nx.y - pt.y) || 1;
         ctx.beginPath();
-        ctx.moveTo(pt.x + (px.x - pt.x) / Math.hypot(px.x - pt.x, px.y - pt.y) * c,
-                   pt.y + (px.y - pt.y) / Math.hypot(px.x - pt.x, px.y - pt.y) * c);
+        ctx.moveTo(pt.x + (px.x - pt.x) / d1 * c, pt.y + (px.y - pt.y) / d1 * c);
         ctx.lineTo(pt.x, pt.y);
-        ctx.lineTo(pt.x + (nx.x - pt.x) / Math.hypot(nx.x - pt.x, nx.y - pt.y) * c,
-                   pt.y + (nx.y - pt.y) / Math.hypot(nx.x - pt.x, nx.y - pt.y) * c);
+        ctx.lineTo(pt.x + (nx.x - pt.x) / d2 * c, pt.y + (nx.y - pt.y) / d2 * c);
         ctx.stroke();
       });
 
-      // Label background + text
+      // Label
       if (label) {
         ctx.font = "bold 12px 'Courier New', monospace";
         var tw  = ctx.measureText(label).width;
-        var lx  = Math.max(minX, 2);
-        var ly  = Math.max(minY - 6, 18);
-        ctx.fillStyle = "rgba(0, 30, 0, 0.75)";
+        var lx  = Math.max(Math.min.apply(null, xs), 2);
+        var ly  = Math.max(Math.min.apply(null, ys) - 6, 18);
+        ctx.fillStyle = "rgba(0,20,0,0.80)";
         ctx.fillRect(lx - 2, ly - 14, tw + 8, 17);
         ctx.fillStyle = "#00ff88";
         ctx.fillText(label, lx + 2, ly);
@@ -427,16 +447,19 @@
       scanning = false;
       if (scanControls) { try { scanControls.stop(); } catch (e) {} scanControls = null; }
       if (codeReader)   { try { codeReader.reset();  } catch (e) {} codeReader   = null; }
-      if (videoStream)  { videoStream.getTracks().forEach(function (t) { t.stop(); }); videoStream = null; }
-
+      if (videoStream)  {
+        videoStream.getTracks().forEach(function (t) { t.stop(); });
+        videoStream = null;
+      }
       var video = document.getElementById("video");
-      video.style.display = "none"; video.srcObject = null;
-      document.getElementById("placeholder").style.display = "block";
+      video.srcObject = null;
+      document.getElementById("placeholder").style.display = "flex";
       document.getElementById("result-wrap").style.display = "none";
-      document.getElementById("overlay").getContext("2d").clearRect(0, 0, 9999, 9999);
+      var ov = document.getElementById("overlay");
+      ov.getContext("2d").clearRect(0, 0, ov.width, ov.height);
       resetButtons();
       setStatus("Scanner detenido"); setDebug(""); setMode("");
-      sendHeight();
+      doSendHeight();
     }
 
     function resetButtons() {
