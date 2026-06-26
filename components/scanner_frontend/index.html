@@ -3,8 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>QR Scanner</title>
-  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <script src="https://unpkg.com/@zxing/library@0.19.1/umd/index.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -14,183 +13,306 @@
       display: flex;
       flex-direction: column;
       align-items: center;
-      padding: 12px;
+      padding: 10px;
       gap: 8px;
     }
-    #reader {
+
+    /* ── Camera view ─────────────────────────────────────────── */
+    .scanner-wrap {
+      position: relative;
       width: 100%;
-      max-width: 420px;
-      border-radius: 10px;
+      max-width: 440px;
+      background: #1a1f2e;
+      border-radius: 12px;
       overflow: hidden;
-      background: #1e2130;
-      min-height: 60px;
+      min-height: 80px;
     }
+    #video { width: 100%; display: block; }
+    #overlay {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+    }
+    #placeholder {
+      padding: 32px;
+      text-align: center;
+      color: #555;
+      font-size: 13px;
+    }
+
+    /* ── Result display ──────────────────────────────────────── */
+    #result-wrap {
+      width: 100%;
+      max-width: 440px;
+      display: none;
+    }
+    #result-code {
+      font-family: 'Courier New', monospace;
+      font-size: 22px;
+      font-weight: bold;
+      background: #1a472a;
+      color: #69db7c;
+      border: 2px solid #2d6a4f;
+      border-radius: 8px;
+      padding: 14px;
+      text-align: center;
+      word-break: break-all;
+      letter-spacing: 1px;
+    }
+    #result-type {
+      font-size: 11px;
+      color: #5a8a6a;
+      text-align: center;
+      margin-top: 4px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    /* ── Buttons ─────────────────────────────────────────────── */
     .btn {
-      padding: 11px 20px;
+      padding: 12px;
       border: none;
       border-radius: 8px;
       font-size: 15px;
+      font-weight: 700;
       cursor: pointer;
-      font-weight: 600;
       width: 100%;
-      max-width: 420px;
+      max-width: 440px;
     }
-    #btn-start  { background: #ff4b4b; color: #fff; }
-    #btn-stop   { background: #555;    color: #fff; display: none; }
-    #btn-test   { background: #1e4d7b; color: #90caf9; font-size: 13px; display: none; }
+    #btn-start { background: #ff4b4b; color: #fff; }
+    #btn-stop  { background: #444;    color: #fff; display: none; }
+
+    /* ── Status ──────────────────────────────────────────────── */
     #status {
-      padding: 10px 14px;
-      border-radius: 8px;
-      font-size: 13px;
-      width: 100%;
-      max-width: 420px;
-      min-height: 38px;
+      font-size: 12px;
+      color: #666;
       text-align: center;
-      font-weight: 500;
-      word-break: break-all;
-      line-height: 1.4;
+      max-width: 440px;
+      min-height: 16px;
     }
-    .idle  { background: #1e2130; color: #888;    border: 1px solid #333; }
-    .new   { background: #1a472a; color: #69db7c; border: 1px solid #2d6a4f; }
-    .dup   { background: #3b2000; color: #ffa94d; border: 1px solid #6b3a00; }
-    .error { background: #3b0f0f; color: #ff6b6b; border: 1px solid #6b1f1f; }
+    #debug {
+      font-size: 10px;
+      color: #444;
+      text-align: center;
+      max-width: 440px;
+      word-break: break-all;
+    }
   </style>
 </head>
 <body>
-  <div id="reader"></div>
+
+  <div class="scanner-wrap" id="scanner-wrap">
+    <div id="placeholder">Cámara inactiva</div>
+    <video id="video" autoplay playsinline muted style="display:none"></video>
+    <canvas id="overlay"></canvas>
+  </div>
+
+  <div id="result-wrap">
+    <div id="result-code">—</div>
+    <div id="result-type">—</div>
+  </div>
+
   <button class="btn" id="btn-start" onclick="startScanner()">Iniciar Scanner</button>
   <button class="btn" id="btn-stop"  onclick="stopScanner()">Detener Scanner</button>
-  <button class="btn" id="btn-test"  onclick="sendTest()">Probar conexión (código de prueba)</button>
-  <div id="status" class="idle">Presiona "Iniciar Scanner" para activar la cámara</div>
+
+  <div id="status">Listo</div>
+  <div id="debug"></div>
 
   <script>
-    // ── Streamlit communication ──────────────────────────────────────────────
+    // ── Streamlit communication ────────────────────────────────────────────────
     window.addEventListener("load", function () {
       window.parent.postMessage(
         { isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 },
         "*"
       );
     });
-
-    window.addEventListener("message", function (evt) {
-      if (evt.data && evt.data.type === "streamlit:render") setHeight();
+    window.addEventListener("message", function (e) {
+      if (e.data && e.data.type === "streamlit:render") sendHeight();
     });
-
-    function sendValue(value) {
+    function sendValue(v) {
       window.parent.postMessage(
-        { isStreamlitMessage: true, type: "streamlit:setComponentValue", value: value, dataType: "json" },
+        { isStreamlitMessage: true, type: "streamlit:setComponentValue", value: v, dataType: "json" },
+        "*"
+      );
+    }
+    function sendHeight() {
+      window.parent.postMessage(
+        { isStreamlitMessage: true, type: "streamlit:setFrameHeight", height: document.body.scrollHeight + 24 },
         "*"
       );
     }
 
-    function setHeight() {
-      var h = document.body.scrollHeight;
-      window.parent.postMessage(
-        { isStreamlitMessage: true, type: "streamlit:setFrameHeight", height: h + 20 },
-        "*"
-      );
-    }
+    // ── Scanner state ──────────────────────────────────────────────────────────
+    var codeReader   = null;
+    var scanControls = null;   // IScannerControls from decodeFromConstraints
+    var lastCode     = null;
+    var lastTime     = 0;
+    var COOLDOWN     = 3000;
+    var clearTimer   = null;
 
-    // ── Scanner ──────────────────────────────────────────────────────────────
-    var scanner    = null;
-    var lastCode   = null;
-    var lastTime   = 0;
-    var COOLDOWN   = 3000;
+    function setStatus(msg) { document.getElementById("status").textContent = msg; }
+    function setDebug(msg)  { document.getElementById("debug").textContent  = msg; }
 
-    var FORMATS = [
-      Html5QrcodeSupportedFormats.QR_CODE,
-      Html5QrcodeSupportedFormats.EAN_13,
-      Html5QrcodeSupportedFormats.EAN_8,
-      Html5QrcodeSupportedFormats.CODE_128,
-      Html5QrcodeSupportedFormats.CODE_39,
-      Html5QrcodeSupportedFormats.UPC_A,
-      Html5QrcodeSupportedFormats.UPC_E,
-      Html5QrcodeSupportedFormats.ITF,
-      Html5QrcodeSupportedFormats.DATA_MATRIX,
-      Html5QrcodeSupportedFormats.PDF_417,
-    ];
-
+    // ── Start ──────────────────────────────────────────────────────────────────
     function startScanner() {
-      document.getElementById("btn-start").style.display = "none";
-      document.getElementById("btn-stop").style.display  = "block";
-      document.getElementById("btn-test").style.display  = "block";
-      setStatus("Iniciando cámara...", "idle");
+      document.getElementById("btn-start").style.display  = "none";
+      document.getElementById("btn-stop").style.display   = "block";
+      document.getElementById("placeholder").style.display = "none";
+      document.getElementById("video").style.display      = "block";
+      setStatus("Cargando ZXing...");
+      sendHeight();
 
-      scanner = new Html5Qrcode("reader", { formatsToSupport: FORMATS, verbose: false });
+      if (typeof ZXing === "undefined") {
+        setStatus("Error: librería ZXing no cargó. Verifica conexión.");
+        resetButtons(); sendHeight(); return;
+      }
 
-      var config = { fps: 15, qrbox: 250, aspectRatio: 1.0 };
+      var hints = new Map();
+      hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+        ZXing.BarcodeFormat.QR_CODE,
+        ZXing.BarcodeFormat.EAN_13,
+        ZXing.BarcodeFormat.EAN_8,
+        ZXing.BarcodeFormat.CODE_128,
+        ZXing.BarcodeFormat.CODE_39,
+        ZXing.BarcodeFormat.UPC_A,
+        ZXing.BarcodeFormat.UPC_E,
+        ZXing.BarcodeFormat.ITF,
+        ZXing.BarcodeFormat.DATA_MATRIX,
+        ZXing.BarcodeFormat.PDF_417,
+      ]);
+      hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
 
-      // Try rear camera first; fall back to default if it fails
-      scanner.start({ facingMode: "environment" }, config, onDetected, function () {})
-        .then(function () {
-          setStatus("Cámara activa — apunta al código", "idle");
-          setHeight();
-        })
-        .catch(function () {
-          // fallback: let the browser choose the camera
-          scanner.start({ facingMode: "user" }, config, onDetected, function () {})
-            .then(function () {
-              setStatus("Cámara activa (frontal) — apunta al código", "idle");
-              setHeight();
-            })
-            .catch(function (err) {
-              setStatus("No se pudo acceder a la cámara: " + err, "error");
-              resetButtons();
-              setHeight();
-            });
-        });
+      // 300 ms between decode attempts
+      codeReader = new ZXing.BrowserMultiFormatReader(hints, 300);
+
+      setStatus("Solicitando acceso a cámara...");
+
+      codeReader.decodeFromConstraints(
+        { video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } } },
+        "video",
+        function (result, error) {
+          if (result) {
+            onDetected(result);
+          } else if (error && !(error instanceof ZXing.NotFoundException)) {
+            setDebug("scan err: " + error.message);
+          }
+        }
+      ).then(function (controls) {
+        scanControls = controls;
+        setStatus("Escaneando — apunta al código");
+        sendHeight();
+      }).catch(function (err) {
+        setStatus("Error al iniciar cámara: " + (err.message || err));
+        setDebug(String(err));
+        resetButtons(); sendHeight();
+      });
     }
 
-    function stopScanner() {
-      if (scanner) {
-        scanner.stop().then(function () {
-          scanner.clear();
-          scanner = null;
-          resetButtons();
-          setStatus("Scanner detenido", "idle");
-          setHeight();
-        }).catch(function () {
-          scanner = null;
-          resetButtons();
-        });
+    // ── Detection callback ─────────────────────────────────────────────────────
+    function onDetected(result) {
+      var text    = result.getText();
+      var fmtEnum = result.getBarcodeFormat();
+      var fmtName = ZXing.BarcodeFormat[fmtEnum] || String(fmtEnum);
+      var now     = Date.now();
+
+      // Draw bounding box on overlay
+      var pts = result.getResultPoints();
+      if (pts && pts.length > 0) drawBox(pts);
+
+      // Show result prominently
+      document.getElementById("result-wrap").style.display = "block";
+      document.getElementById("result-code").textContent   = text;
+      document.getElementById("result-type").textContent   = fmtName;
+      sendHeight();
+
+      // Auto-clear box after 2 s of no new detection
+      clearTimeout(clearTimer);
+      clearTimer = setTimeout(function () {
+        var ov = document.getElementById("overlay");
+        ov.getContext("2d").clearRect(0, 0, ov.width, ov.height);
+      }, 2000);
+
+      // Send to Streamlit (same code respects cooldown)
+      if (text !== lastCode || now - lastTime >= COOLDOWN) {
+        lastCode = text;
+        lastTime = now;
+        setDebug("→ Streamlit: " + text + " [" + fmtName + "]");
+        sendValue({ code: text, type: fmtName, scan_id: now });
       }
+    }
+
+    // ── Bounding box drawing ───────────────────────────────────────────────────
+    function drawBox(pts) {
+      var video   = document.getElementById("video");
+      var overlay = document.getElementById("overlay");
+      var ctx     = overlay.getContext("2d");
+
+      var vW = video.videoWidth  || 640;
+      var vH = video.videoHeight || 480;
+      var dW = overlay.clientWidth  || video.clientWidth  || 320;
+      var dH = overlay.clientHeight || video.clientHeight || 240;
+
+      overlay.width  = dW;
+      overlay.height = dH;
+
+      var sx = dW / vW;
+      var sy = dH / vH;
+
+      ctx.clearRect(0, 0, dW, dH);
+
+      var xs = pts.map(function (p) { return p.getX() * sx; });
+      var ys = pts.map(function (p) { return p.getY() * sy; });
+      var pad = 12;
+      var x = Math.min.apply(null, xs) - pad;
+      var y = Math.min.apply(null, ys) - pad;
+      var w = Math.max.apply(null, xs) - x + pad;
+      var h = Math.max.apply(null, ys) - y + pad;
+      if (h < 50) { y -= 20; h += 40; } // ensure visible height for 1D barcodes
+
+      // Semi-transparent fill
+      ctx.fillStyle = "rgba(0, 255, 136, 0.08)";
+      ctx.fillRect(x, y, w, h);
+
+      // Border
+      ctx.strokeStyle = "#00ff88";
+      ctx.lineWidth   = 2.5;
+      ctx.strokeRect(x, y, w, h);
+
+      // Corner brackets
+      var c = 18;
+      ctx.strokeStyle = "#00ff88";
+      ctx.lineWidth   = 4;
+      ctx.beginPath();
+      // TL
+      ctx.moveTo(x,     y + c); ctx.lineTo(x,     y); ctx.lineTo(x + c, y);
+      // TR
+      ctx.moveTo(x+w-c, y);     ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + c);
+      // BL
+      ctx.moveTo(x,     y+h-c); ctx.lineTo(x,     y + h); ctx.lineTo(x + c, y + h);
+      // BR
+      ctx.moveTo(x+w-c, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - c);
+      ctx.stroke();
+    }
+
+    // ── Stop ───────────────────────────────────────────────────────────────────
+    function stopScanner() {
+      if (scanControls) { try { scanControls.stop(); } catch (e) {} scanControls = null; }
+      if (codeReader)   { try { codeReader.reset();  } catch (e) {} codeReader   = null; }
+      document.getElementById("video").style.display      = "none";
+      document.getElementById("placeholder").style.display = "block";
+      document.getElementById("result-wrap").style.display = "none";
+      var ov = document.getElementById("overlay");
+      ov.getContext("2d").clearRect(0, 0, ov.width, ov.height);
+      resetButtons();
+      setStatus("Scanner detenido");
+      setDebug("");
+      sendHeight();
     }
 
     function resetButtons() {
       document.getElementById("btn-start").style.display = "block";
       document.getElementById("btn-stop").style.display  = "none";
-      document.getElementById("btn-test").style.display  = "none";
-    }
-
-    function onDetected(decodedText, decodedResult) {
-      var now = Date.now();
-      if (decodedText === lastCode && now - lastTime < COOLDOWN) return;
-      lastCode = decodedText;
-      lastTime = now;
-
-      var fmt = "UNKNOWN";
-      try {
-        // html5-qrcode v2.3.x exposes formatName here
-        fmt = decodedResult.result.format.formatName;
-      } catch (e) {
-        try { fmt = String(decodedResult.result.format.format); } catch (e2) {}
-      }
-
-      setStatus("✓ Detectado: " + decodedText + "\nTipo: " + fmt, "new");
-      sendValue({ code: decodedText, type: fmt, scan_id: now });
-    }
-
-    function sendTest() {
-      var now = Date.now();
-      setStatus("Enviando código de prueba...", "idle");
-      sendValue({ code: "PRUEBA-" + now, type: "TEST", scan_id: now });
-    }
-
-    function setStatus(msg, cls) {
-      var el = document.getElementById("status");
-      el.textContent = msg;
-      el.className   = cls;
-      setHeight();
     }
   </script>
 </body>
