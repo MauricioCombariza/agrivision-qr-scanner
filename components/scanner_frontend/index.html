@@ -138,38 +138,54 @@
     }
 
     // ── Audio ──────────────────────────────────────────────────────────────────
+    // iOS Safari requires AudioContext to be created AND resumed inside a user
+    // gesture. We do both in startScanner() (the button tap), then always call
+    // resume() before scheduling notes — this handles the suspended state iOS
+    // puts the context in when the page loses focus.
     var audioCtx = null;
-    function getAudio() {
-      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      return audioCtx;
-    }
-    function beepSuccess() {
+
+    function unlockAudio() {
       try {
-        var ctx = getAudio();
-        [880, 1320].forEach(function (hz, i) {
-          var o = ctx.createOscillator(), g = ctx.createGain();
-          o.connect(g); g.connect(ctx.destination);
-          o.type = "sine"; o.frequency.value = hz;
-          var t = ctx.currentTime + i * 0.12;
-          g.gain.setValueAtTime(0.35, t);
-          g.gain.exponentialRampToValueAtTime(0.001, t + 0.10);
-          o.start(t); o.stop(t + 0.10);
+        if (!audioCtx) {
+          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audioCtx.state === "suspended") audioCtx.resume();
+      } catch (e) {}
+    }
+
+    function playTones(tones) {
+      // tones: [{hz, type, vol, start, dur}]
+      try {
+        if (!audioCtx) return;
+        var resume = (audioCtx.state === "suspended")
+          ? audioCtx.resume()
+          : Promise.resolve();
+        resume.then(function () {
+          tones.forEach(function (t) {
+            var o = audioCtx.createOscillator();
+            var g = audioCtx.createGain();
+            o.connect(g); g.connect(audioCtx.destination);
+            o.type = t.type; o.frequency.value = t.hz;
+            var at = audioCtx.currentTime + t.start;
+            g.gain.setValueAtTime(t.vol, at);
+            g.gain.exponentialRampToValueAtTime(0.001, at + t.dur);
+            o.start(at); o.stop(at + t.dur);
+          });
         });
       } catch (e) {}
+    }
+
+    function beepSuccess() {
+      playTones([
+        { hz: 880,  type: "sine",     vol: 0.35, start: 0.00, dur: 0.10 },
+        { hz: 1320, type: "sine",     vol: 0.35, start: 0.12, dur: 0.10 },
+      ]);
     }
     function beepError() {
-      try {
-        var ctx = getAudio();
-        [300, 200].forEach(function (hz, i) {
-          var o = ctx.createOscillator(), g = ctx.createGain();
-          o.connect(g); g.connect(ctx.destination);
-          o.type = "sawtooth"; o.frequency.value = hz;
-          var t = ctx.currentTime + i * 0.18;
-          g.gain.setValueAtTime(0.25, t);
-          g.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
-          o.start(t); o.stop(t + 0.15);
-        });
-      } catch (e) {}
+      playTones([
+        { hz: 300, type: "sawtooth", vol: 0.25, start: 0.00, dur: 0.15 },
+        { hz: 200, type: "sawtooth", vol: 0.25, start: 0.18, dur: 0.15 },
+      ]);
     }
 
     // ── State ──────────────────────────────────────────────────────────────────
@@ -189,6 +205,7 @@
 
     // ── Start ──────────────────────────────────────────────────────────────────
     function startScanner() {
+      unlockAudio(); // must be called inside user gesture for iOS
       document.getElementById("btn-start").style.display   = "none";
       document.getElementById("btn-stop").style.display    = "block";
       document.getElementById("placeholder").style.display = "none";
